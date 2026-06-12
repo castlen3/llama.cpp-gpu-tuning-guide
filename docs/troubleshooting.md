@@ -4,123 +4,101 @@
 
 | Symptom | Section |
 |---------|---------|
-| `--list-devices` empty | [No CUDA backend](#no-cuda-backend) |
+| `--list-devices` empty | [No GPU backend](#no-gpu-backend) |
 | VRAM unchanged after model load | [Offload failure](#offload-failure) |
-| nvidia-smi shows VRAM used but GPU utilization ~0% | [GPU idle despite VRAM](#gpu-idle-despite-vram) |
+| GPU VRAM occupied but utilization ~0% | [Backend fallback](#backend-fallback) |
 | Prompt eval never finishes | [Prefill hang](#prefill-hang) |
 | `-fa` parse error | [Flag syntax mismatch](#flag-syntax-mismatch) |
 | .bat flashes and closes | [Port conflict](#port-conflict) |
-| .bat says `'ngl' is not recognized ...` | [Batch continuation trap](#batch-continuation-trap) |
+| .bat says `'ngl' is not recognized` | [Batch continuation trap](#batch-continuation-trap) |
 | llama-bench OOM at previously-working ngl | [Stale process](#stale-process) |
-| `/health` OK but `/slots` timeout | [CUDA graph hang](#cuda-graph-hang) |
+| `/health` OK but `/slots` timeout | [Graph hang](#graph-hang) |
+| Slow decode on MoE | [Missing MoE parameter](#missing-moe-parameter) |
 
 ---
 
-## No CUDA Backend
+## No GPU Backend
 
-**Symptoms**: `--list-devices` shows no CUDA0, or not found.
+**Symptoms**: `--list-devices` shows only CPU, or is empty.
 
-**Causes**:
-- Binary compiled without CUDA (`GGML_CUDA=OFF`)
-- Downloaded `llama-bin-win-cuda` instead of `cudart-llama-bin-win-cuda`
-- Missing `ggml-cuda.dll`
+**Cause**: Binary has no GPU backend support.
 
-**Fix**: Get a `cudart-llama-bin-win-cuda` build. Verify `ggml-cuda.dll` exists and `--list-devices` shows CUDA0.
+**Fix**:
+- CUDA: Get `cudart-llama-bin-win-cuda` build, verify `ggml-cuda.dll` exists (~150 MB)
+- Vulkan: Verify `ggml-vulkan.dll` exists
+- Metal: Verify `libggml-metal.dylib` exists (macOS only)
+- ROCm: Verify `libggml-hip.so` exists (Linux only)
 
 ---
 
 ## Offload Failure
 
-**Symptoms**: nvidia-smi VRAM doesn't rise after model load. `offloaded 0/N layers` in verbose log.
+**Symptoms**: VRAM unchanged after model load, `offloaded 0/NN layers` in verbose log.
 
-**Causes**:
-- `-fit on` (auto-fit) making wrong decisions
-- mmap issues on Windows
+**Cause**: Layer offload failed despite GPU being detected.
 
 **Fix**:
-```bat
--fit off --no-mmap
-```
-Restart and check verbose log for `offloaded XX/NN layers` where XX > 0.
+1. Try `-fit off --no-mmap` (Windows)
+2. Check `--verbose` log for error messages
+3. Verify backend library loaded: `load_backend: loaded [backend] from ...`
+4. See backend-specific docs: [cuda.md](cuda.md), [vulkan.md](vulkan.md), [metal.md](metal.md), [rocm.md](rocm.md)
 
 ---
 
-## GPU Idle Despite VRAM
+## Backend Fallback
 
-**Symptoms**:
-- nvidia-smi shows VRAM occupied (e.g. 14 GB)
-- GPU utilization stays near 0%
-- Inference works but feels slow
+**Symptoms**: GPU VRAM occupied but GPU utilization near 0%.
 
-**Causes and checks**:
+**Cause**: Weights loaded to VRAM but compute falling back to CPU.
 
-### 1. Wrong monitoring tool
-Windows Task Manager often shows the wrong GPU engine for CUDA workloads. Use:
-```bat
-nvidia-smi -l 1
-```
-Look at the `Volatile GPU-Util` column.
+**Possible Causes**:
+1. Offload failed (check `offloaded N/M layers` in verbose log)
+2. Mixed KV dtype causing prefill stall (CUDA)
+3. CUDA graph capture bug (try `--no-graph` if available)
+4. Backend not fully loaded (check `load_backend` in log)
 
-### 2. Low batch size
-At `-np 1` with small prompts, GPU finishes compute in microseconds and idles waiting for CPU to prepare the next token. This is **normal** — low utilization ≠ problem.
-
-### 3. CUDA graphs idle between tokens
-CUDA graph mode completes each decode step in one launch then waits. Utilization spikes are brief.
-
-### 4. Offload actually working?
-Confirm from verbose log:
-```
-llama_prepare_model_devices: using device CUDA0
-CUDA0 KV buffer size = ...
-```
-
-### 5. CPU bottleneck
-If CPU is pegged at 100% during inference, the GPU is waiting on CPU. Reduce `-t` or check for background processes.
+**Fix**:
+- Switch to symmetric KV dtype (both q8_0 or both q4_0)
+- Try `--no-graph` if available
+- Monitor with backend-specific tool (nvidia-smi, rocm-smi, GPU-Z)
 
 ---
 
 ## Prefill Hang
 
-**Symptoms**: Prompt eval starts but never finishes. No error, just stalls.
+**Symptoms**: Prompt evaluation never completes.
 
-**Causes**:
-- **Mixed KV dtype** (`-ctk q8_0 -ctv q4_0`): known to cause prefill stalls on some CUDA backends
-- CUDA graph capture issue with certain batch/ctx combinations
-- Driver timeout on very large prompts
+**Cause**: Usually backend-specific. On CUDA, commonly caused by mixed KV dtype.
 
 **Fix**:
-1. Use symmetric KV types: both `q8_0` or both `q4_0`
-2. Try `--no-graph` if available in your build
-3. Reduce `-b` or `-ub` temporarily
+- Switch to symmetric KV: `-ctk q8_0 -ctv q8_0` or `-ctk q4_0 -ctv q4_0`
+- Reduce context size
+- Try `--no-graph`
 
 ---
 
 ## Flag Syntax Mismatch
 
-**Symptoms**: Error parsing `-fa` or other flags.
+**Symptoms**: `-fa` parse error at startup.
 
-**Causes**: Builds use different flag syntax.
+**Cause**: Different builds use different flag syntax.
 
-**Fix**: Always check `llama-server.exe --help` first. Common variations:
-
-| Old builds | Newer builds (≥b9596) |
-|-----------|----------------------|
-| `-fa` | `-fa on` or `--flash-attn on` |
-| `--n-gpu-layers` | `-ngl` or `--gpu-layers` |
-
-Use the exact form shown in your build's `--help`, not what you see in online guides.
+**Fix**: Run `--help` and use exactly what it shows:
+- `-fa` (older builds)
+- `-fa on` (newer builds)
+- `--flash-attn on`
 
 ---
 
 ## Port Conflict
 
-**Symptoms**: .bat flashes open and immediately closes.
+**Symptoms**: .bat opens then closes immediately.
 
-**Causes**: Another llama-server is already running on port 8080.
+**Cause**: Port already in use by another llama process.
 
 **Fix**:
-```powershell
-Get-Process -Name llama-server | Stop-Process -Force
+```bat
+taskkill /F /IM llama-server.exe /IM llama-cli.exe /IM llama-bench.exe
 ```
 Or use a different port: `--port 8081`
 
@@ -128,74 +106,53 @@ Or use a different port: `--port 8081`
 
 ## Batch Continuation Trap
 
-**Symptoms**: Double-click `.bat`, window opens then immediately shows:
-```
-'ngl' is not recognized as an internal or external command
-```
-(or any parameter name as a command).
+**Symptoms**: `.bat` shows `'ngl' is not recognized as an internal or external command`.
 
-**Cause**: The `^` line-continuation character in `.bat` files **must** be the very last character before the newline — no trailing spaces. If there's any space after `^`, cmd.exe treats the next line as a new command instead of continuing the previous one.
+**Cause**: The `^` line-continuation character must be the very last character before the newline — no trailing spaces. If there's any space after `^`, cmd.exe treats the next line as a new command.
 
-```
+```bat
 :: BROKEN — space after ^
 llama-server.exe ^
   -ngl 61
-:: cmd sees: llama-server.exe [broken] then tries to run "-ngl" as a command
 
 :: WORKING — ^ is last char
 llama-server.exe ^
 -ngl 61
 ```
 
-**Fix**: Two options:
-1. **Single-line command** (recommended, most reliable):
-   ```bat
-   "%LLAMA_DIR%\llama-server.exe" --host 0.0.0.0 -m "%MODEL%" -ngl 61 -c 24576 ...
-   ```
-2. **`^` continuation** — ensure ZERO trailing characters after `^` before the newline. Use a text editor that shows whitespace, or write in a tool that doesn't add trailing spaces.
+**Fix**: Use single-line command, or ensure zero trailing characters after `^`.
 
-**Why this keeps happening**: Many editors and AI-generated content silently add trailing spaces. The `.bat` looks correct visually but fails at runtime. The single-line approach eliminates this entirely.
+---
 
 ## Stale Process
 
 **Symptoms**: llama-bench OOM at ngl that previously worked.
 
-**Causes**: Previous llama-bench or llama-server process still holding VRAM.
+**Cause**: Previous llama process still holding VRAM.
 
 **Fix**:
 ```powershell
 Get-Process -Name llama-cli,llama-server,llama-bench -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep 3
 ```
-Verify with `nvidia-smi` that VRAM returned to idle levels.
+Kill before every run, not just when problems appear.
 
 ---
 
-## CUDA Graph Hang
+## Graph Hang
 
-**Symptoms**: Server starts, `/health` returns OK, but `/slots` or chat requests timeout.
+**Symptoms**: `/health` returns OK but `/slots` times out.
 
-**Causes**:
-- CUDA graph capture failed silently
-- Specific ctx/batch combination breaks graph building
+**Cause**: CUDA graph capture bug.
 
-**Fix**:
-1. Check `--verbose` log for `CUDA graph warmup complete` or errors
-2. Try different `-c` or `-b` values
-3. Try `--no-graph` if build supports it
+**Fix**: Try `--no-graph` if available in your build.
 
 ---
 
-## Driver/OS Issues
+## Missing MoE Parameter
 
-### Windows-specific
+**Symptoms**: MoE model decode is unexpectedly slow.
 
-- **DLL not found**: Ensure all CUDA DLLs (`cublas64_*.dll`, `cudart64_*.dll`) are in the same directory as `llama-server.exe`
-- **Antivirus**: Some AV software blocks `ggml-cuda.dll` — add exception
-- **Power mode**: Set to "High Performance" to prevent GPU throttling
+**Cause**: `--n-cpu-moe` not set, experts placed suboptimally.
 
-### General
-
-- **Driver version**: Use latest Game Ready or Studio driver from NVIDIA
-- **WSL**: CUDA in WSL requires `nvidia-smi` to work inside WSL first
-- **Multiple GPUs**: Use `--main-gpu` to select which GPU
+**Fix**: Check if `--n-cpu-moe` is available in your build. See [docs/moe-tuning.md](moe-tuning.md).

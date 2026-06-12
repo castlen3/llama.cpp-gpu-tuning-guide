@@ -1,9 +1,14 @@
 @echo off
 setlocal
 
+:: ============================================================
+:: Generic llama-server launch template
+:: Edit the paths and parameters below for your hardware/model
+:: ============================================================
+
 echo ============================================
-echo   Qwen3.6 27B Q4_K_M ^| ngl=61 ^| ctx=32768 ^| q8_0 KV
-echo   http://0.0.0.0:8080
+echo   llama-server launch template
+echo   Edit this file before use
 echo ============================================
 echo.
 
@@ -18,20 +23,35 @@ timeout /t 1 /nobreak >nul
 echo [3/3] Starting llama-server...
 echo.
 
-set LLAMA_DIR=C:\Users\castlen3\llama-cuda-5060ti-release
-set MODEL=C:\Users\castlen3\.lmstudio\models\lmstudio-community\Qwen3.6-27B-GGUF\Qwen3.6-27B-Q4_K_M.gguf
+:: ============================================================
+:: EDIT THESE PATHS
+:: ============================================================
+set LLAMA_DIR=C:\path\to\llama-cpp\bin
+set MODEL=C:\path\to\model.gguf
+
+:: ============================================================
+:: EDIT THESE PARAMETERS (see README.md for tuning guide)
+:: ============================================================
+:: -ngl N          GPU layers (start at 50%% of total, sweep up)
+:: -c N            Context size (start at 4096, double until OOM)
+:: -ctk/-ctv       KV cache type (q8_0 if VRAM allows, q4_0 if tight)
+:: -fa on          Flash attention (check --help for exact syntax)
+:: -b/-ub          Batch sizes (2048/512 is safe default)
+:: -t/-tb          CPU threads (start at physical_cores/2)
+:: -np 1           Parallel slots (1 for single-user)
+:: ============================================================
 
 "%LLAMA_DIR%\llama-server.exe" ^
+  --host 0.0.0.0 ^
   -m "%MODEL%" ^
-  -c 32768 ^
-  -ngl 61 ^
+  -ngl 32 ^
+  -c 8192 ^
   -ctk q8_0 ^
   -ctv q8_0 ^
   -fa on ^
   -b 2048 ^
   -ub 512 ^
-  -t 8 ^
-  -tb 16 ^
+  -t 4 ^
   -np 1
 
 pause

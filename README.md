@@ -1,16 +1,75 @@
-# llama.cpp GPU Parameter Tuning Guide
+# llama.cpp GPU Tuning Guide
 
-Dense & MoE model optimization SOP for NVIDIA GPUs.
+A general-purpose tuning playbook for llama.cpp GPU inference.
 
-**TL;DR**: Do not maximize `-ngl` blindly. Maximize stable GPU residency:
+This guide is designed for agents and humans who need to optimize unknown hardware/model combinations. It is not tied to a specific GPU. Hardware-specific results are kept as [case studies](#case-studies).
+
+---
+
+## TL;DR
+
+Do not maximize `-ngl` blindly. Maximize stable GPU residency:
 
 - highest stable `-ngl`
 - safe KV cache type
 - normal graph splits
 - no CPU fallback
-- no mixed KV dtype prefill stall
+- no backend-specific prefill stalls
 
 30 seconds to start, 5 minutes to diagnose, 30 minutes to a meaningful benchmark.
+
+---
+
+## Agent Decision Framework
+
+When you receive a llama.cpp tuning task, follow this order:
+
+### 1. Identify Backend
+
+```text
+What GPU / accelerator is available?
+  - NVIDIA → CUDA (docs/cuda.md)
+  - AMD desktop → Vulkan (docs/vulkan.md) or ROCm (docs/rocm.md)
+  - Apple Silicon → Metal (docs/metal.md)
+  - No GPU → CPU-only fallback
+```
+
+Run `--list-devices` to confirm. If the expected backend is absent, stop and fix the binary first.
+
+### 2. Identify Model Type
+
+```text
+Check GGUF metadata: general.architecture
+  - has n_routed_experts → MoE route
+  - no experts → Dense route
+```
+
+MoE and Dense models have fundamentally different tuning strategies.
+
+### 3. Identify Pressure Source
+
+VRAM pressure can come from multiple sources. Identify which one is the bottleneck:
+
+| Source | How to detect |
+|--------|---------------|
+| Model weights | `offloaded N/M layers` in verbose log |
+| KV cache | `CUDA0 KV buffer size = XXX MiB` in verbose log |
+| Compute buffer | Startup log, typically 100-300 MB |
+| CPU offloaded layers | High CPU usage during inference |
+| Backend fallback | GPU VRAM occupied but GPU utilization near 0% |
+
+### 4. Choose Tuning Route
+
+```text
+Dense model    → docs/dense-tuning.md
+MoE model      → docs/moe-tuning.md
+Long context   → docs/kv-cache-sizing.md
+Backend issue  → docs/cuda.md | docs/vulkan.md | docs/metal.md | docs/rocm.md
+```
+
+### 5. Run a Minimal Reproducible Benchmark
+
+Start with conservative parameters, establish a baseline, then sweep one variable at a time.
 
 ---
 
@@ -18,57 +77,55 @@ Dense & MoE model optimization SOP for NVIDIA GPUs.
 
 | What | Parameter | Conservative Start | Notes |
 |------|-----------|-------------------|-------|
-| CPU threads | `-t` | `min(physical_cores, 8)` | Impact shrinks as ngl rises |
+| CPU threads | `-t` | `physical_cores / 2` | Sweep around physical core count |
 | Batch threads | `-tb` | same as `-t` | Check `--help`, not all builds have it |
 | GPU layers | `-ngl` | `total_layers * 0.5` | +4~+8 steps toward ceiling |
 | MoE CPU experts | `--n-cpu-moe` | `total_experts * 0.6` | Often bigger impact than ngl on decode |
 | Context | `-c` | `4096` | Double each step until OOM |
-| KV cache type | `-ctk -ctv` | `q8_0/q8_0` if VRAM >= 12GB, else `q4_0/q4_0` | Avoid mixing q8_0 + q4_0 |
-| Flash attention | `-fa` | check `--help` first | Some builds: `-fa`, others: `-fa on` or `--flash-attn on` |
+| KV cache type | `-ctk -ctv` | `q8_0/q8_0` if VRAM allows, else `q4_0/q4_0` | Avoid mixing types on CUDA |
+| Flash attention | `-fa` | check `--help` first | Syntax varies by build |
 | Prefill batch | `-b` | `2048` | Matters only for long prompts |
 | Micro batch | `-ub` | `512` | Typically `b / 4` |
 | Auto-fit | `-fit` | `off` for benchmarking | Can use `on` for casual daily use |
-| Memory map | `--mmap` | `on` by default | Use `--no-mmap` if model load hangs/fails on Windows |
+| Memory map | `--mmap` | `on` by default | `--no-mmap` if model load fails |
 | Parallel slots | `-np` | `1` | Each slot eats proportional VRAM |
 
 ---
 
-## Step 0: Know Your Binary (Do This First)
+## Step 0: Know Your Binary
 
 Every build is different. Before tuning any parameter:
 
-```bat
-llama-server.exe --version
-llama-server.exe --help > llama-help.txt 2>&1
-llama-server.exe --list-devices
+```sh
+llama-server --version
+llama-server --help > llama-help.txt 2>&1
+llama-server --list-devices
 ```
 
 Verify from the output:
 
 | Check | What to look for |
 |-------|-----------------|
-| CUDA backend exists | `ggml-cuda.dll` in binary directory (~150 MB) |
-| GPU detected | `--list-devices` shows `CUDA0: NVIDIA ...` |
+| Backend exists | Backend-specific DLL/dylib/so present |
+| GPU detected | `--list-devices` shows your device |
 | ngl flag | `-ngl`, `--n-gpu-layers`, or `--gpu-layers` |
 | KV cache flags | `-ctk`/`--cache-type-k`, `-ctv`/`--cache-type-v` |
-| Flash attention flag | `-fa`, `-fa on`, or `--flash-attn` — use exactly what `--help` shows |
-| Thread flags | `-t`/`--threads`, `-tb`/`--threads-batch` (not all builds have `-tb`) |
+| Flash attention flag | Use exactly what `--help` shows |
+| Thread flags | `-t`/`--threads`, `-tb`/`--threads-batch` |
 | MoE flag | `--n-cpu-moe` or `-ncmoe` |
-
-**If `--list-devices` does NOT show CUDA0, stop here.** Your binary does not have CUDA support. Get a `cudart-llama-bin-win-cuda` build.
 
 ---
 
 ## Decision Tree
 
 ```
-1. --list-devices -> CUDA0: ... ?
-   +- NO  -> Get CUDA build, restart
-   +- YES -> continue
+1. --list-devices → shows GPU?
+   +- NO  → Fix binary / driver, restart
+   +- YES → continue
 
 2. Check GGUF metadata: general.architecture
-   +- has n_routed_experts -> MoE route
-   +- no experts -> Dense route
+   +- has n_routed_experts → MoE route
+   +- no experts → Dense route
 
 3. Dense route: docs/dense-tuning.md
    a. ngl sweep (ctx=4096)
@@ -122,6 +179,7 @@ per-layer VRAM ~ model_file_size / total_layers
 2. Increase by +4~+8 layers per step
 3. When approaching ceiling (<4 layers from OOM), switch to +-1~2 step
 4. Pick the highest ngl that is stable and does not regress tok/s
+5. If only a few layers remain on CPU, check whether CPU/RAM becomes the critical path
 
 See: [docs/dense-tuning.md](docs/dense-tuning.md)
 
@@ -131,46 +189,53 @@ Context window size. KV cache grows proportionally.
 
 ```
 -c 4096   = safe baseline
--c 24576  = 24K
+-c 8192   = 8K
 -c 32768  = 32K
 ```
 
 ### `-ctk / -ctv`
 
-KV cache quantization.
+KV cache quantization. See [docs/kv-cache-sizing.md](docs/kv-cache-sizing.md).
 
-| Setting | VRAM | Precision | When |
-|---------|------|-----------|------|
-| `q8_0 q8_0` | higher | more conservative | VRAM has headroom |
-| `q4_0 q4_0` | half | good enough for most use | VRAM tight |
+| Setting | VRAM | When |
+|---------|------|------|
+| `q8_0 q8_0` | higher | VRAM has headroom |
+| `q4_0 q4_0` | half | VRAM tight |
 
-Avoid mixed KV types (e.g. `-ctk q8_0 -ctv q4_0`). Some CUDA backends exhibit prefill stalls or hangs with asymmetric KV cache dtypes.
+On CUDA, avoid asymmetric KV cache dtypes (e.g. `-ctk q8_0 -ctv q4_0`) unless verified safe on your build, because it may cause prefill stall/hang. Other backends may not have this issue.
 
 Use the startup log as the source of truth for KV buffer size:
+
 ```
-llama_kv_cache:      CUDA0 KV buffer size =  XXX MiB
+llama_kv_cache:      GPU KV buffer size =  XXX MiB
 ```
-Run with `--verbose` and your target `-c` to get exact numbers — no estimation needed.
+
+Run with `--verbose` and your target `-c` to get exact numbers.
 
 ### `-fa / --flash-attn`
 
-Reduces VRAM growth for long prompts. Recommended for long-context CUDA runs.
+Reduces VRAM growth for long prompts. Recommended for long-context GPU runs where supported.
 
 Check your build's `--help` for exact syntax. Common variants:
 
 - `-fa` (older builds)
-- `-fa on` (builds >= b9596)
+- `-fa on` (newer builds)
 - `--flash-attn on`
 
 ### `-t / --threads`
 
 CPU threads for non-GPU compute.
 
+**General strategy:**
+
 ```
--t = min(physical_cores, 8)
+Start: physical_cores / 2
+Then:  physical_cores
+Then:  physical_cores + 2
+Then:  logical_threads
 ```
 
-Near-max ngl -> threads have minimal impact (+-2 = negligible).
+For older DDR3 / memory-bound platforms, fewer threads may be faster. For modern DDR4/DDR5, physical cores is usually the sweet spot. Near-max ngl, threads have minimal impact on GPU-dominated inference.
 
 ### `-tb / --threads-batch`
 
@@ -180,9 +245,7 @@ Batch processing threads. Not all builds expose this flag. If available, set equ
 
 Number of routed experts kept on CPU. Higher = less VRAM, slower decode.
 
-Impact on decode speed often exceeds `-ngl` for MoE models.
-
-See: [docs/moe-tuning.md](docs/moe-tuning.md)
+Impact on decode speed often exceeds `-ngl` for MoE models. See [docs/moe-tuning.md](docs/moe-tuning.md).
 
 ### `-fit`
 
@@ -190,7 +253,7 @@ Auto-fit mode. Off for reproducible benchmarking and manual tuning; can use on f
 
 ### `--mmap / --no-mmap`
 
-Memory-mapped model loading. Leave on by default. `--no-mmap` is a useful Windows workaround when loading is slow, fails, or mmap behavior is suspicious — it is not universally required.
+Memory-mapped model loading. Leave on by default. `--no-mmap` is a useful workaround when loading is slow, fails, or mmap behavior is suspicious on your platform.
 
 ### `-b / --batch-size`
 
@@ -206,20 +269,22 @@ Concurrent request slots. Each slot adds proportional VRAM cost.
 
 ---
 
-## Verifying CUDA Is Actually Working
+## Verifying GPU Backend Is Actually Working
 
 Three checks:
 
 ```
-1. ggml-cuda.dll exists (~150 MB)
-2. --list-devices shows CUDA0
+1. Backend library exists (e.g. ggml-cuda.dll, ggml-vulkan.dll)
+2. --list-devices shows your GPU
 3. Startup log (--verbose) contains:
-   ggml_cuda_init: found N CUDA devices
-   llama_prepare_model_devices: using device CUDA0
-   CUDA0 KV buffer size = ...
+   [backend]_init: found N devices
+   llama_prepare_model_devices: using device GPU0
+   GPU0 KV buffer size = ...
 ```
 
-If nvidia-smi shows VRAM not rising after model load, CUDA offload is not working. Try `-fit off --no-mmap`, then check `--verbose` log for `offloaded 0/N layers`.
+If GPU VRAM is not rising after model load, offload is not working. Try `-fit off --no-mmap`, then check `--verbose` log for `offloaded 0/N layers`.
+
+Backend-specific verification: [docs/cuda.md](docs/cuda.md) | [docs/vulkan.md](docs/vulkan.md) | [docs/metal.md](docs/metal.md) | [docs/rocm.md](docs/rocm.md)
 
 ---
 
@@ -227,27 +292,17 @@ If nvidia-smi shows VRAM not rising after model load, CUDA offload is not workin
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| `--list-devices` empty | No CUDA binary | Get `cudart-llama-bin-win-cuda` build |
-| VRAM unchanged in nvidia-smi | 0 layers offloaded | Add `-fit off --no-mmap`, check verbose log |
+| `--list-devices` empty | No GPU backend in binary | Get a build with your backend |
+| VRAM unchanged after load | 0 layers offloaded | Add `-fit off --no-mmap`, check verbose log |
 | `-fa` parse error | Build syntax changed | Run `--help`, use exact flag shown |
-| .bat flashes and closes | Port 8080 in use | Kill all llama processes first |
-| .bat says `'ngl' is not recognized ...` | `^` has trailing space | Single-line command |
+| .bat flashes and closes | Port in use | Kill all llama processes first |
+| .bat says `'ngl' is not recognized` | `^` has trailing space | Use single-line command |
 | Bench OOM | ngl too high / stale process | Kill processes, reduce ngl |
 | Bench fails to start | Parallel runs | Sequential only |
-| VRAM used but GPU utilization ~0% | See below | See below |
+| VRAM used but GPU utilization ~0% | Backend fallback | See backend-specific docs |
 | Prompt eval never finishes | Mixed KV dtype bug | Use symmetric `-ctk -ctv` |
-| `/health` OK but `/slots` timeout | CUDA graph hang | Check verbose log for graph errors |
+| `/health` OK but `/slots` timeout | Graph hang | Check verbose log for graph errors |
 | Slow decode on MoE | Missing `--n-cpu-moe` | Check model type, add parameter |
-
-### GPU "Not Working" Despite VRAM Usage
-
-If VRAM is occupied but GPU compute utilization stays near 0%:
-
-1. Monitor correctly: Use `nvidia-smi -l 1`, not Windows Task Manager (which shows the wrong engine for CUDA workloads).
-2. Check offload count: In `--verbose` log, confirm `offloaded N/M layers` where N > 0.
-3. Mixed KV dtype: If using asymmetric `-ctk -ctv`, switch to symmetric (both q8_0 or both q4_0).
-4. CUDA graphs: Some builds hit graph capture bugs. Try `--no-graph` if available.
-5. CUDA backend loaded?: Confirm `load_backend: loaded CUDA backend from ... ggml-cuda.dll` in log.
 
 ---
 
@@ -258,7 +313,7 @@ VRAM_used ~ model_size * (ngl / total_layers)
           + KV_cache (see docs/kv-cache-sizing.md)
           + ~200 MB (compute + recurrent state buffers)
 
-Available = nvidia-smi total - idle usage - 500 MB safety margin
+Available = GPU total VRAM - idle usage - 500 MB safety margin
 ```
 
 When OOM, reduce in this order:
@@ -274,15 +329,15 @@ When OOM, reduce in this order:
 
 ### llama-bench Quick Start
 
-```bat
-:: Dense
-llama-bench.exe -m model.gguf -ngl N -ctk q8_0 -ctv q8_0 -fa on -t T
+```sh
+# Dense
+llama-bench -m model.gguf -ngl N -ctk q8_0 -ctv q8_0 -fa on -t T
 
-:: MoE
-llama-bench.exe -m model.gguf -ngl N --n-cpu-moe M -ctk q8_0 -ctv q8_0 -fa on -t T
+# MoE
+llama-bench -m model.gguf -ngl N --n-cpu-moe M -ctk q8_0 -ctv q8_0 -fa on -t T
 
-:: Custom prompt length
-llama-bench.exe ... -p 2048 -n 256
+# Custom prompt length
+llama-bench ... -p 2048 -n 256
 ```
 
 Output: `pp512` = prefill t/s, `tg128` = decode t/s.
@@ -294,16 +349,15 @@ Output: `pp512` = prefill t/s, `tg128` = decode t/s.
 3. Narrow near ceiling (+-1~2 layers)
 4. Kill processes between every run
 
----
+### Benchmark Result Template
 
-## Benchmark Result Template
-
-```
+```text
 | Field | Value |
 |-------|-------|
-| GPU | NVIDIA GeForce RTX ____ |
+| GPU | ____ |
 | Driver | ____ |
 | llama.cpp commit/build | ____ |
+| Backend | CUDA / Vulkan / Metal / ROCm |
 | Model | ____ |
 | Quant | ____ |
 | ctx | ____ |
@@ -322,43 +376,38 @@ Output: `pp512` = prefill t/s, `tg128` = decode t/s.
 
 ---
 
-## Repo Structure
+## Case Studies
 
-```
-README.md                     <- You are here
-start-server.bat              <- Optimized launch template
-docs/
-  cuda-backend-check.md       <- Verifying CUDA is actually loaded
-  dense-tuning.md             <- Dense model tuning workflow
-  moe-tuning.md               <- MoE model tuning workflow
-  kv-cache-sizing.md          <- KV cache size estimation
-  troubleshooting.md          <- Detailed symptom->fix map
-examples/
-  rtx5060ti-qwen27b-24k-q8.bat
-  rtx5060ti-qwen27b-32k-q4.bat
-  rtx3060-qwen35b-moe.bat
-```
+Real-world tuning results for specific hardware/model combinations.
+
+| Hardware | Backend | Model | File |
+|----------|---------|-------|------|
+| RTX 5060 Ti 16GB | CUDA | Qwen3.6 27B Q4_K_M | [examples/rtx5060ti-qwen27b.md](examples/rtx5060ti-qwen27b.md) |
+| RTX 3060 12GB | CUDA | Qwen3.6 35B A3B Q4_K_M | [examples/rtx3060-qwen35b-moe.md](examples/rtx3060-qwen35b-moe.md) |
+| RX 6600 8GB | Vulkan | Qwen3.5 MoE | [examples/rx6600-vulkan-qwen35b-moe.md](examples/rx6600-vulkan-qwen35b-moe.md) |
+| RX 580 2048SP | Vulkan | Gemma 12B | [examples/rx580-vulkan-gemma12b.md](examples/rx580-vulkan-gemma12b.md) |
+| GTX 1070 8GB | CUDA | Gemma 12B | [examples/gtx1070-cuda-gemma12b.md](examples/gtx1070-cuda-gemma12b.md) |
 
 ---
 
-## Appendix: Real-World Data
+## Repo Structure
 
-### RTX 5060 Ti 16GB + Qwen3.6 27B Q4_K_M (Dense, 64 layers)
-
-| Param | Value |
-|-------|-------|
-| ngl max stable | 61 (62 OOM) |
-| ctx max stable | 24576 (32K OOM) |
-| t tested | 6-8; t=8 preferred on E5-2666 v3 DDR3 |
-| pp512 | 676 t/s |
-| tg128 | 13.4 t/s |
-
-### RTX 3060 12GB + Qwen3.6 35B A3B Q4_K_M (MoE)
-
-| Param | Value |
-|-------|-------|
-| ngl | 40 |
-| n_cpu_moe | 28 |
-| ctx | 32768 |
-| t final | 8 |
-| tg128 | 26.3 t/s |
+```
+README.md                     ← You are here (generic SOP)
+start-server.bat              ← Generic launch template (edit paths before use)
+docs/
+  cuda.md                     ← CUDA backend verification & gotchas
+  vulkan.md                   ← Vulkan backend verification & gotchas
+  metal.md                    ← Metal backend verification & gotchas
+  rocm.md                     ← ROCm backend verification & gotchas
+  dense-tuning.md             ← Dense model tuning workflow
+  moe-tuning.md               ← MoE model tuning workflow
+  kv-cache-sizing.md          ← KV cache sizing & dtype selection
+  troubleshooting.md          ← Detailed symptom→fix map
+examples/
+  rtx5060ti-qwen27b.md        ← Case study: RTX 5060 Ti + Qwen 27B
+  rtx3060-qwen35b-moe.md      ← Case study: RTX 3060 + Qwen 35B MoE
+  rx6600-vulkan-qwen35b-moe.md
+  rx580-vulkan-gemma12b.md
+  gtx1070-cuda-gemma12b.md
+```

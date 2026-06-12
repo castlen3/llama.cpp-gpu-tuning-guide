@@ -1,101 +1,87 @@
 # MoE Model Tuning
 
-For mixture-of-experts models (`n_routed_experts` present in GGUF metadata).
-
-Examples: Qwen3.6-35B-A3B, Mixtral, DeepSeek-V2.
+For models with mixture-of-experts (has `n_routed_experts` in GGUF metadata).
 
 ## Key Difference from Dense
 
-MoE has two independent GPU offload dimensions:
+MoE models have two critical parameters:
 
-| Parameter | What it offloads | Impact |
-|-----------|-----------------|--------|
-| `-ngl` | Attention layers + shared expert | Prefill speed |
-| `--n-cpu-moe` | Routed experts kept on CPU | **Decode speed** (larger impact) |
+1. **`-ngl`**: Controls how many transformer layers are on GPU (same as Dense)
+2. **`--n-cpu-moe`**: Controls how many routed experts are kept on CPU
 
-`--n-cpu-moe` often has greater effect on decode tok/s than `-ngl`.
+For MoE, raw ngl is not the whole story. Expert placement can dominate both VRAM and speed.
 
 ## Prerequisites
 
-- [CUDA backend verified](cuda-backend-check.md)
-- GGUF metadata: `block_count`, `n_routed_experts`, `num_experts_per_tok`
+- Backend verified
+- GGUF metadata known: `block_count`, `expert_count`, `expert_used_count`
 - All llama processes killed before each bench run
 
-## Phase 1: n_cpu_moe Sweep (Most Impactful)
+## Phase 1: Expert Placement Sweep
 
 ### Goal
-Find the `--n-cpu-moe` value that maximizes decode speed.
+
+Find the optimal balance between GPU and CPU expert placement.
 
 ### Strategy
 
-```
-1. Fix ngl at: total_layers × 0.5
-2. Sweep: --n-cpu-moe 0, 4, 8, 12, 16, 20, 24, 28, 32
-3. Step size: 4~8
-4. Look for highest tg128 (decode tok/s)
+```text
+1. Try full GPU offload if VRAM allows (ngl=max, n_cpu_moe=0).
+2. If OOM, try: ngl=50%, n_cpu_moe = total_experts * 0.6.
+3. Sweep n_cpu_moe: total_experts * 0.4, 0.5, 0.6, 0.7, 0.8.
+4. For each n_cpu_moe, note VRAM usage and decode speed.
 ```
 
-### Example
+### What to Record
 
-```bat
-llama-bench -ngl 40 --n-cpu-moe 0  -c 4096 ...
-llama-bench -ngl 40 --n-cpu-moe 8  -c 4096 ...
-llama-bench -ngl 40 --n-cpu-moe 16 -c 4096 ...
-llama-bench -ngl 40 --n-cpu-moe 24 -c 4096 ...
-llama-bench -ngl 40 --n-cpu-moe 28 -c 4096 ...
-llama-bench -ngl 40 --n-cpu-moe 32 -c 4096 ...
+```text
+- Active experts per token (from model config)
+- CPU expert placement (n_cpu_moe value)
+- VRAM usage
+- Decode speed (tg128)
 ```
 
 ### Judgment
 
-- `--n-cpu-moe = 0`: all experts on GPU → fastest if VRAM fits
-- `--n-cpu-moe > 0`: offloads some expert compute to CPU → saves VRAM, decode may still be fast if CPU is strong
-- Typical sweet spot: `total_experts × 0.6` to `total_experts × 0.75`
+- Higher n_cpu_moe = less VRAM, slower decode
+- Impact on decode speed often exceeds ngl for MoE models
+- Find the sweet spot where VRAM fits and decode is acceptable
 
 ## Phase 2: ngl Sweep
 
-### Goal
-Fine-tune ngl with n_cpu_moe fixed at best value.
+After finding optimal n_cpu_moe:
 
-```bat
-llama-bench --n-cpu-moe <best> -ngl 32 ...
-llama-bench --n-cpu-moe <best> -ngl 36 ...
-llama-bench --n-cpu-moe <best> -ngl 40 ...
-llama-bench --n-cpu-moe <best> -ngl 44 ...
+```sh
+llama-bench -ngl <n_cpu_moe=best> -ngl 30 ...
+llama-bench -ngl <n_cpu_moe=best> -ngl 40 ...
+llama-bench -ngl <n_cpu_moe=best> -ngl 50 ...
+...
 ```
+
+Same strategy as Dense: start at 50%, increase by +4~8, fine-tune near ceiling.
 
 ## Phase 3: Context Sweep
 
-Same as dense: double ctx until OOM.
-MoE models often support larger ctx because expert weights dominate VRAM, not KV cache.
+Same as Dense. See [docs/dense-tuning.md](docs/dense-tuning.md) Phase 2.
 
-## Phase 4: Thread Sweep
+## Phase 4: Thread & Batch Sweep
 
-Same as dense. Usually negligible at high GPU residency.
+Same as Dense. See [docs/dense-tuning.md](docs/dense-tuning.md) Phases 3-4.
 
-## MTP (Multi-Token Prediction) Variant Notes
+## Common MoE Pitfalls
 
-MTP models have draft heads that consume extra VRAM. On tight VRAM budgets:
-- General (non-MTP) variant often outperforms MTP
-- If using MTP: reduce `--n-cpu-moe` to compensate for draft head VRAM
+### Missing `--n-cpu-moe`
 
-## Final Configuration
+If MoE decode is unexpectedly slow, check whether `--n-cpu-moe` is available in your build. Without it, all experts may be forced onto GPU (OOM) or CPU (slow).
 
-```bat
-set NGL=<best>
-set N_CPU_MOE=<best>
-set CTX=<best>
-set THREADS=<best>
+### Expert Offload Combinations
 
-llama-server.exe ^
-  -m "model.gguf" ^
-  -ngl %NGL% ^
-  --n-cpu-moe %N_CPU_MOE% ^
-  -c %CTX% ^
-  -ctk q8_0 -ctv q8_0 ^
-  -fa on ^
-  -b 2048 -ub 512 ^
-  -t %THREADS% ^
-  -np 1 ^
-  -fit off
-```
+Some builds support fine-grained expert offloading. Check `--help` for:
+
+- `--n-cpu-moe` / `-ncmoe`
+- `--n-gpu-layers-moe` (rare)
+- Expert sharding options
+
+### VRAM vs Speed Tradeoff
+
+MoE models have a steeper VRAM/speed tradeoff than Dense models. A small change in expert placement can have a large impact on decode speed.
