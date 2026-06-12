@@ -1,8 +1,8 @@
-# llama.cpp GPU Tuning Guide
+# llama.cpp GPU Tuning Playbook
 
 A general-purpose tuning playbook for llama.cpp GPU inference.
 
-This guide is designed for agents and humans who need to optimize unknown hardware/model combinations. It is not tied to a specific GPU. Hardware-specific results are kept as [case studies](#case-studies).
+This guide is designed for agents and humans who need to optimize unknown hardware, model, backend, and context-length combinations. It is not tied to a specific GPU. Hardware-specific results are kept as case studies.
 
 ---
 
@@ -179,7 +179,7 @@ per-layer VRAM ~ model_file_size / total_layers
 2. Increase by +4~+8 layers per step
 3. When approaching ceiling (<4 layers from OOM), switch to +-1~2 step
 4. Pick the highest ngl that is stable and does not regress tok/s
-5. If only a few layers remain on CPU, check whether CPU/RAM becomes the critical path
+5. If only a few layers remain on CPU, check whether CPU/RAM bandwidth has become the critical path before assuming the GPU is the bottleneck
 
 See: [docs/dense-tuning.md](docs/dense-tuning.md)
 
@@ -228,12 +228,17 @@ CPU threads for non-GPU compute.
 
 **General strategy:**
 
+Start near physical cores rather than logical threads. On older DDR3 or memory-bound systems, fewer threads may outperform full logical-thread usage.
+
 ```
 Start: physical_cores / 2
 Then:  physical_cores
 Then:  physical_cores + 2
 Then:  logical_threads
 ```
+
+Use `-t` primarily to tune decode/generation throughput.
+Use `-tb` primarily to tune prompt processing / prefill throughput when the build exposes this flag.
 
 For older DDR3 / memory-bound platforms, fewer threads may be faster. For modern DDR4/DDR5, physical cores is usually the sweet spot. Near-max ngl, threads have minimal impact on GPU-dominated inference.
 
