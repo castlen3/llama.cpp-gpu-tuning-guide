@@ -10,6 +10,7 @@
 | Prompt eval never finishes | [Prefill hang](#prefill-hang) |
 | `-fa` parse error | [Flag syntax mismatch](#flag-syntax-mismatch) |
 | .bat flashes and closes | [Port conflict](#port-conflict) |
+| .bat says `'ngl' is not recognized ...` | [Batch continuation trap](#batch-continuation-trap) |
 | llama-bench OOM at previously-working ngl | [Stale process](#stale-process) |
 | `/health` OK but `/slots` timeout | [CUDA graph hang](#cuda-graph-hang) |
 
@@ -124,6 +125,36 @@ Get-Process -Name llama-server | Stop-Process -Force
 Or use a different port: `--port 8081`
 
 ---
+
+## Batch Continuation Trap
+
+**Symptoms**: Double-click `.bat`, window opens then immediately shows:
+```
+'ngl' is not recognized as an internal or external command
+```
+(or any parameter name as a command).
+
+**Cause**: The `^` line-continuation character in `.bat` files **must** be the very last character before the newline — no trailing spaces. If there's any space after `^`, cmd.exe treats the next line as a new command instead of continuing the previous one.
+
+```
+:: BROKEN — space after ^
+llama-server.exe ^
+  -ngl 61
+:: cmd sees: llama-server.exe [broken] then tries to run "-ngl" as a command
+
+:: WORKING — ^ is last char
+llama-server.exe ^
+-ngl 61
+```
+
+**Fix**: Two options:
+1. **Single-line command** (recommended, most reliable):
+   ```bat
+   "%LLAMA_DIR%\llama-server.exe" --host 0.0.0.0 -m "%MODEL%" -ngl 61 -c 24576 ...
+   ```
+2. **`^` continuation** — ensure ZERO trailing characters after `^` before the newline. Use a text editor that shows whitespace, or write in a tool that doesn't add trailing spaces.
+
+**Why this keeps happening**: Many editors and AI-generated content silently add trailing spaces. The `.bat` looks correct visually but fails at runtime. The single-line approach eliminates this entirely.
 
 ## Stale Process
 

@@ -218,6 +218,7 @@ Three checks:
 | VRAM unchanged in nvidia-smi | 0 layers offloaded | Add `-fit off --no-mmap`, check verbose log |
 | `-fa` parse error | Build syntax changed | Run `--help`, use exact flag shown |
 | .bat flashes and closes | Port 8080 in use | Kill all llama processes first |
+| .bat says `'ngl' is not recognized ...` | `^` has trailing space | Single-line command |
 | Bench OOM | ngl too high / stale process | Kill processes, reduce ngl |
 | Bench fails to start | Parallel runs | Sequential only |
 | **VRAM used but GPU utilization ~0%** | See below | See below |
