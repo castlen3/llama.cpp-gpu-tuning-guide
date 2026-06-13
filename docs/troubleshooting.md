@@ -27,7 +27,6 @@
 **Fix**:
 - CUDA: Get `cudart-llama-bin-win-cuda` build, verify `ggml-cuda.dll` exists (~150 MB)
 - Vulkan: Verify `ggml-vulkan.dll` exists
-- Metal: Verify `libggml-metal.dylib` exists (macOS only)
 - ROCm: Verify `libggml-hip.so` exists (Linux only)
 
 ---
@@ -42,7 +41,7 @@
 1. Try `-fit off --no-mmap` (Windows)
 2. Check `--verbose` log for error messages
 3. Verify backend library loaded: `load_backend: loaded [backend] from ...`
-4. See backend-specific docs: [cuda.md](cuda.md), [vulkan.md](vulkan.md), [metal.md](metal.md), [rocm.md](rocm.md)
+4. See backend-specific docs: [cuda.md](cuda.md), [vulkan.md](vulkan.md), [rocm.md](rocm.md)
 
 ---
 

@@ -32,7 +32,6 @@ When you receive a llama.cpp tuning task, follow this order:
 What GPU / accelerator is available?
   - NVIDIA → CUDA (docs/cuda.md)
   - AMD desktop → Vulkan (docs/vulkan.md) or ROCm (docs/rocm.md)
-  - Apple Silicon → Metal (docs/metal.md)
   - No GPU → CPU-only fallback
 ```
 
@@ -66,7 +65,7 @@ VRAM pressure can come from multiple sources. Identify which one is the bottlene
 Dense model    → docs/dense-tuning.md
 MoE model      → docs/moe-tuning.md
 Long context   → docs/kv-cache-sizing.md
-Backend issue  → docs/cuda.md | docs/vulkan.md | docs/metal.md | docs/rocm.md
+Backend issue  → docs/cuda.md | docs/vulkan.md | docs/rocm.md
 ```
 
 ### 5. Run a Minimal Reproducible Benchmark
@@ -291,7 +290,7 @@ Three checks:
 
 If GPU VRAM is not rising after model load, offload is not working. Try `-fit off --no-mmap`, then check `--verbose` log for `offloaded 0/N layers`.
 
-Backend-specific verification: [docs/cuda.md](docs/cuda.md) | [docs/vulkan.md](docs/vulkan.md) | [docs/metal.md](docs/metal.md) | [docs/rocm.md](docs/rocm.md)
+Backend-specific verification: [docs/cuda.md](docs/cuda.md) | [docs/vulkan.md](docs/vulkan.md) | [docs/rocm.md](docs/rocm.md)
 
 ---
 
@@ -364,7 +363,7 @@ Output: `pp512` = prefill t/s, `tg128` = decode t/s.
 | GPU | ____ |
 | Driver | ____ |
 | llama.cpp commit/build | ____ |
-| Backend | CUDA / Vulkan / Metal / ROCm |
+| Backend | CUDA / Vulkan / ROCm |
 | Model | ____ |
 | Quant | ____ |
 | ctx | ____ |
@@ -405,7 +404,6 @@ start-server.bat              ← Generic launch template (edit paths before use
 docs/
   cuda.md                     ← CUDA backend verification & gotchas
   vulkan.md                   ← Vulkan backend verification & gotchas
-  metal.md                    ← Metal backend verification & gotchas
   rocm.md                     ← ROCm backend verification & gotchas
   dense-tuning.md             ← Dense model tuning workflow
   moe-tuning.md               ← MoE model tuning workflow

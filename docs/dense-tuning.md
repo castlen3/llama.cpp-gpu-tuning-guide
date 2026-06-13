@@ -4,7 +4,7 @@ For models without mixture-of-experts (no `n_routed_experts` in GGUF metadata).
 
 ## Prerequisites
 
-- Backend verified (see [cuda.md](cuda.md), [vulkan.md](vulkan.md), [metal.md](metal.md), [rocm.md](rocm.md))
+- Backend verified (see [cuda.md](cuda.md), [vulkan.md](vulkan.md), [rocm.md](rocm.md))
 - Model GGUF metadata known: `block_count` (total layers), `head_count_kv`, `embedding_length`
 - All llama processes killed before each bench run
 

@@ -58,7 +58,7 @@ On CUDA, mixing KV cache types (e.g. `-ctk q8_0 -ctv q4_0`) may cause prefill st
 - `-ctk q8_0 -ctv q8_0`
 - `-ctk q4_0 -ctv q4_0`
 
-Other backends (Vulkan, Metal) may not have this issue. Verify on your specific build.
+Other backends (Vulkan, ROCm) may not have this issue. Verify on your specific build.
 
 ## VRAM Budgeting
 
