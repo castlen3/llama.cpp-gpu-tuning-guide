@@ -44,7 +44,9 @@ Actual values depend on model architecture. Use the startup log as source of tru
 ## Factors Affecting Actual Size
 
 - **GQA ratio**: Higher ratio = fewer KV heads = smaller cache
-- **Sliding window**: Some architectures use smaller window for local attention
+- **Sliding window (SWA)**: Architectures like Gemma 4 use sliding window attention on some layers, which keep only a small window (e.g. 1024 tokens) instead of the full context. This can shrink KV cache by 50-70% vs the naive formula. **Always verify with the startup log** — estimation alone will overstate VRAM usage for SWA models.
+
+  *Example:* Gemma 4 12B, 48 layers, 8 SWA layers (1024-token window), 40 full-attention layers. At 80K ctx q8_0, the naive formula predicts ~14 GB KV cache. Actual measured: ~765 MB — over 18x less. This is because SWA layers contribute negligible cache and the non-SWA layers use far fewer KV heads than the raw head_count_kv suggests.
 - **Recurrent/SSM layers**: These don't store KV cache at all (e.g., hybrid models store KV only on full-attention layers)
 - **Quantization implementation**: Actual bytes may include alignment padding
 - **Flash attention**: May change buffer layout but not total size

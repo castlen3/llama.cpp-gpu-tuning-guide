@@ -13,6 +13,7 @@
 | .bat says `'ngl' is not recognized` | [Batch continuation trap](#batch-continuation-trap) |
 | llama-bench OOM at previously-working ngl | [Stale process](#stale-process) |
 | `/health` OK but `/slots` timeout | [Graph hang](#graph-hang) |
+| Server loads model then stops logging, never ready | [Graph hang](#graph-hang) |
 | Slow decode on MoE | [Missing MoE parameter](#missing-moe-parameter) |
 
 ---
@@ -131,21 +132,26 @@ llama-server.exe ^
 **Cause**: Previous llama process still holding VRAM.
 
 **Fix**:
-```powershell
-Get-Process -Name llama-cli,llama-server,llama-bench -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep 3
+```bat
+taskkill /f /im llama-server.exe /im llama-cli.exe /im llama-bench.exe
 ```
+> `taskkill /f` is more reliable than `Stop-Process -Force` on Windows for clearing VRAM.
+
 Kill before every run, not just when problems appear.
 
 ---
 
 ## Graph Hang
 
-**Symptoms**: `/health` returns OK but `/slots` times out.
+**Symptoms**: Server loads model, allocates KV cache, then stops producing output. No "HTTP server listening" message. `/health` may return OK but `/slots` times out. On large contexts (>= 32K), the process may appear running but produce zero log output for minutes.
 
-**Cause**: CUDA graph capture bug.
+**Cause**: CUDA graph compilation can hang silently, especially on large contexts and in background/daemon mode. Foreground execution often works fine with the same parameters.
 
-**Fix**: Try `--no-graph` if available in your build.
+**Fix**:
+1. Run in **foreground** first to confirm server starts correctly
+2. Try `--no-graph` if available in your build
+3. Reduce context size as temporary workaround
+4. Once verified in foreground, switch to background
 
 ---
 

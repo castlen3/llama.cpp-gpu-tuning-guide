@@ -14,6 +14,10 @@ For models without mixture-of-experts (no `n_routed_experts` in GGUF metadata).
 
 Find highest stable ngl without OOM or performance regression.
 
+> **Note on VRAM-abundant GPUs:** On GPUs with ample VRAM (e.g. 22GB+ for a 7GB model), starting at `total_layers * 0.5` is overly conservative. You can jump directly to `ngl=99` and verify. The "don't maximize ngl" rule applies when VRAM is the bottleneck — not when it's clearly sufficient.
+
+> **Note on SWA (Sliding Window Attention) models:** Architectures like Gemma 4 use sliding window attention on some layers, dramatically reducing KV cache size. VRAM estimates from the formula in `kv-cache-sizing.md` will overstate actual usage. Always verify with the startup log's `KV buffer size` line.
+
 ### Strategy
 
 ```text
@@ -47,13 +51,18 @@ llama-bench -ngl 61 ...
 
 ### Fixed Parameters During Sweep
 
+llama-bench does NOT support `-c` (context size). Use `-p` (prompt tokens) and `-n` (gen tokens) instead. For context sweep (Phase 2), use llama-server.
+
 ```sh
--c 4096
--ctk q8_0 -ctv q8_0   # or q4_0 if VRAM < 12GB
--fa on                 # or whatever --help shows for your build
+# llama-bench — does NOT have -c flag. Use -p + -n to set test length:
+-p 512 -n 128           # typical benchmark
+-p 4096 -n 128          # longer prefill test
+
+-ctk q8_0 -ctv q8_0     # or q4_0 if VRAM < 12GB
+-fa on                   # or whatever --help shows for your build
 -t = physical_cores / 2
 -b 2048 -ub 512
--fit off               # for reproducible benchmarking
+-fit off                 # for reproducible benchmarking
 ```
 
 ## Phase 2: Context Sweep
@@ -93,10 +102,10 @@ Find the thread sweet spot for your platform.
 ### Strategy
 
 ```sh
-llama-bench -ngl <best> -c <best> -t <physical_cores/2> ...
-llama-bench -ngl <best> -c <best> -t <physical_cores>   ...
-llama-bench -ngl <best> -c <best> -t <physical_cores+2> ...
-llama-bench -ngl <best> -c <best> -t <logical_threads>   ...
+llama-bench -ngl <best> -t <physical_cores/2> ...
+llama-bench -ngl <best> -t <physical_cores>   ...
+llama-bench -ngl <best> -t <physical_cores+2> ...
+llama-bench -ngl <best> -t <logical_threads>   ...
 ```
 
 Typically all within +-2%. On memory-bound platforms (DDR3), fewer threads may be faster. On modern DDR4/DDR5, physical cores is usually the sweet spot.
@@ -110,9 +119,9 @@ Find prefill batch sweet spot.
 ### Strategy
 
 ```sh
-llama-bench -ngl <best> -c <best> -t <best> -b 1024 ...
-llama-bench -ngl <best> -c <best> -t <best> -b 2048 ...
-llama-bench -ngl <best> -c <best> -t <best> -b 4096 ...
+llama-bench -ngl <best> -t <best> -b 1024 ...
+llama-bench -ngl <best> -t <best> -b 2048 ...
+llama-bench -ngl <best> -t <best> -b 4096 ...
 ```
 
 For pp512, all values >=512 perform identically. Only matters for long prompts.

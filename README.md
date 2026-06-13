@@ -16,6 +16,8 @@ Do not maximize `-ngl` blindly. Maximize stable GPU residency:
 - no CPU fallback
 - no backend-specific prefill stalls
 
+If VRAM is abundant (e.g. 22GB GPU + 7GB model), `ngl=99` is a valid starting point. Use the startup log's KV buffer size, not formula estimates, for SWA/hybrid architectures.
+
 30 seconds to start, 5 minutes to diagnose, 30 minutes to a meaningful benchmark.
 
 ---
@@ -144,20 +146,20 @@ Verify from the output:
 
 ## Pre-Bench Discipline
 
-```powershell
-# Run BEFORE every single bench or server launch
-Get-Process -Name llama-cli,llama-server,llama-bench -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep 3
+```bat
+:: Kill all llama processes before every run (taskkill is more reliable than PowerShell Stop-Process)
+taskkill /f /im llama-server.exe /im llama-cli.exe /im llama-bench.exe
 
-# Verify clean
-Get-Process -Name llama-cli,llama-server,llama-bench
-# MUST return nothing
+:: Verify clean
+powershell -Command "Get-Process -Name llama-cli,llama-server,llama-bench -ErrorAction SilentlyContinue"
+:: MUST return nothing
 ```
 
 - Kill after every run, before every next run
 - Never parallelize llama-bench runs
 - One variable changed per test
 - OOM = ceiling reached, stop
+- **On Windows, prefer `taskkill /f` over `Stop-Process`** — stale processes may hold VRAM silently
 
 ---
 

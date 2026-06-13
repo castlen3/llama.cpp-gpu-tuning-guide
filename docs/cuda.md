@@ -84,6 +84,34 @@ Possible causes:
 3. CUDA graph capture bug (try `--no-graph` if available)
 4. Backend not loaded (check `load_backend: loaded CUDA backend` in log)
 
+### CUDA Graph Compile Hang
+
+On large contexts (>= 32K), CUDA graph compilation can hang silently — the process appears running but produces no output and never becomes ready. This is especially common in background/daemon mode.
+
+**Symptoms:**
+- `llama-server` starts, loads model, allocates KV cache, then stops logging
+- No "HTTP server listening" message even after several minutes
+- Process is alive (in task manager) but unresponsive
+- VRAM is allocated (visible in nvidia-smi) but server never answers
+
+**Fix:**
+1. Run in **foreground** first to confirm the server starts correctly
+2. If foreground works but background hangs, try `--no-graph` (check `--help` for availability)
+3. Reduce context size as a temporary workaround
+4. Once verified, switch to background mode
+
+### Windows Process Kill Preference
+
+`taskkill /f /im llama-*.exe` is more reliable than `Get-Process | Stop-Process` on Windows.
+
+PowerShell's `Stop-Process -Force` may leave orphaned processes holding VRAM, leading to false OOM errors on subsequent runs. When in doubt:
+
+```bat
+taskkill /f /im llama-server.exe /im llama-cli.exe /im llama-bench.exe
+```
+
+This is especially important between benchmark runs — stale processes are invisible in Task Manager but still consume VRAM.
+
 ### mmap Issues on Windows
 
 If model load hangs or fails on Windows, try `--no-mmap` as a workaround.
