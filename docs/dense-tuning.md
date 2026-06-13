@@ -18,6 +18,10 @@ Find highest stable ngl without OOM or performance regression.
 
 > **Note on SWA (Sliding Window Attention) models:** Architectures like Gemma 4 use sliding window attention on some layers, dramatically reducing KV cache size. VRAM estimates from the formula in `kv-cache-sizing.md` will overstate actual usage. Always verify with the startup log's `KV buffer size` line.
 
+> **Note on high-VRAM dense models:** If the model nearly fits, test `ngl=99`
+> at the target context before spending time on mid-range sweeps. A single layer
+> left on CPU can create a large decode cliff on some builds.
+
 ### Strategy
 
 ```text
@@ -64,6 +68,13 @@ llama-bench does NOT support `-c` (context size). Use `-p` (prompt tokens) and `
 -b 2048 -ub 512
 -fit off                 # for reproducible benchmarking
 ```
+
+For `llama-server` benchmarks, also add `--cache-ram 0` unless you are
+specifically testing prompt cache behavior.
+
+`llama-bench` is only a scout. For final dense-model decisions, use
+`llama-server` at the target context and record both `prompt_per_second` and
+`predicted_per_second`.
 
 ## Phase 2: Context Sweep
 
@@ -125,6 +136,32 @@ llama-bench -ngl <best> -t <best> -b 4096 ...
 ```
 
 For pp512, all values >=512 perform identically. Only matters for long prompts.
+
+For long-prompt server tests, use a 4K+ prompt. Do not judge prefill from
+`pp512` alone.
+
+Larger batch is not automatically faster. Test:
+
+```text
+-b 2048 -ub 512
+-b 4096 -ub 512
+-b 4096 -ub 1024
+-b 8192 -ub 1024
+```
+
+Keep the setting that improves long-prompt prefill without increasing VRAM too
+much. If all larger values are slower, keep `-b 2048 -ub 512`.
+
+## Phase 5: MTP / Speculative Decoding
+
+For MTP-capable dense models, first establish a no-MTP baseline. Then follow
+[speculative-mtp.md](speculative-mtp.md).
+
+Remember:
+
+- MTP improves decode, not prefill
+- Measure short-prompt decode and long-prompt prefill separately
+- Higher draft count is not automatically faster
 
 ## Final Configuration
 

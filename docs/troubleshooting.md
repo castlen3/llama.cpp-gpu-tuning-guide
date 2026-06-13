@@ -15,6 +15,9 @@
 | `/health` OK but `/slots` timeout | [Graph hang](#graph-hang) |
 | Server loads model then stops logging, never ready | [Graph hang](#graph-hang) |
 | Slow decode on MoE | [Missing MoE parameter](#missing-moe-parameter) |
+| Random OOM or slowdown on Windows | [RAM pressure from no-mmap or prompt cache](#ram-pressure-from-no-mmap-or-prompt-cache) |
+| Fast MTP decode but slow long prompts | [MTP prefill misconception](#mtp-prefill-misconception) |
+| Big slowdown from one lower `-ngl` | [Layer offload cliff](#layer-offload-cliff) |
 
 ---
 
@@ -38,10 +41,11 @@
 **Cause**: Layer offload failed despite GPU being detected.
 
 **Fix**:
-1. Try `-fit off --no-mmap` (Windows)
+1. Try `-fit off`
 2. Check `--verbose` log for error messages
 3. Verify backend library loaded: `load_backend: loaded [backend] from ...`
-4. See backend-specific docs: [cuda.md](cuda.md), [vulkan.md](vulkan.md), [rocm.md](rocm.md)
+4. Use `--no-mmap` only as a separate diagnostic after a clean mmap baseline
+5. See backend-specific docs: [cuda.md](cuda.md), [vulkan.md](vulkan.md), [rocm.md](rocm.md)
 
 ---
 
@@ -161,3 +165,68 @@ Kill before every run, not just when problems appear.
 **Cause**: `--n-cpu-moe` not set, experts placed suboptimally.
 
 **Fix**: Check if `--n-cpu-moe` is available in your build. See [docs/moe-tuning.md](moe-tuning.md).
+
+---
+
+## RAM Pressure From no-mmap or Prompt Cache
+
+**Symptoms**:
+- Windows becomes unstable during tests
+- a previously working config OOMs
+- VRAM looks fine but system RAM is low
+- repeated bench/server runs get slower or crash
+
+**Cause**:
+Large GGUF files plus `--no-mmap` can put heavy pressure on system RAM. Newer
+`llama-server` builds may also enable prompt cache by default, often with an
+8192 MiB limit.
+
+**Fix**:
+1. Leave mmap enabled by default
+2. Add `--cache-ram 0` for benchmarks
+3. Kill all llama processes before each run
+4. Record free RAM and VRAM before testing
+5. Test `--no-mmap` only as an isolated experiment
+
+---
+
+## MTP Prefill Misconception
+
+**Symptoms**:
+- MTP decode is fast
+- long prompt ingestion still feels slow
+- total request time is disappointing for document-heavy prompts
+
+**Cause**:
+MTP/speculative decoding accelerates decode, not prompt prefill. Dense models
+can remain prefill-bound even when MTP is working perfectly.
+
+**Fix**:
+Measure separately:
+
+```text
+short prompt + 128/256 generated tokens -> decode
+4K prompt + 16 generated tokens         -> prefill
+```
+
+Compare MTP on/off. If prefill is similar in both cases, MTP is not the cause.
+See [speculative-mtp.md](speculative-mtp.md).
+
+---
+
+## Layer Offload Cliff
+
+**Symptoms**:
+- `-ngl N` is much slower than `-ngl N+1`
+- CPU usage rises during decode
+- a high-VRAM GPU appears slower than a smaller newer GPU
+
+**Cause**:
+One or more final layers may remain on CPU/host memory. On some models this
+creates a large decode cliff.
+
+**Fix**:
+1. If VRAM allows, test `-ngl 99`
+2. Verify offload count from the startup log
+3. Run target-context `llama-server`, not only `llama-bench`
+4. Keep mmap on and use `--cache-ram 0` during verification

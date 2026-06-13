@@ -65,7 +65,7 @@ llama-server.exe ^
 ## Lessons Learned
 
 1. `-fa` syntax changed between builds — always check `--help`
-2. `-fit off --no-mmap` ensures reproducible benchmarks on Windows
+2. `-fit off` helps reproducible benchmarks; test `--no-mmap` only as a separate diagnostic after a clean mmap baseline
 3. `^` continuation in .bat files must have zero trailing spaces
 4. Kill all llama processes before each run to avoid VRAM conflicts
 5. ngl sweep from 50% with +8 steps is efficient for finding the ceiling

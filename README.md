@@ -8,13 +8,17 @@ This guide is designed for agents and humans who need to optimize unknown hardwa
 
 ## TL;DR
 
-Do not maximize `-ngl` blindly. Maximize stable GPU residency:
+Agents: read [docs/agent-sop.md](docs/agent-sop.md) first.
+
+Do not maximize `-ngl` blindly, but also do not leave layers on CPU when VRAM
+can hold them. Maximize stable GPU residency:
 
 - highest stable `-ngl`
 - safe KV cache type
 - normal graph splits
 - no CPU fallback
 - no backend-specific prefill stalls
+- no accidental RAM pressure from `--no-mmap` or prompt cache
 
 If VRAM is abundant (e.g. 22GB GPU + 7GB model), `ngl=99` is a valid starting point. Use the startup log's KV buffer size, not formula estimates, for SWA/hybrid architectures.
 
@@ -25,6 +29,24 @@ If VRAM is abundant (e.g. 22GB GPU + 7GB model), `ngl=99` is a valid starting po
 ## Agent Decision Framework
 
 When you receive a llama.cpp tuning task, follow this order:
+
+### 0. Establish Clean State
+
+Before tuning, verify no stale llama processes are holding VRAM and record free
+VRAM/RAM. On Windows:
+
+```bat
+taskkill /F /IM llama-server.exe /IM llama-cli.exe /IM llama-bench.exe
+nvidia-smi
+```
+
+For reproducible `llama-server` benchmarks, prefer mmap on and add:
+
+```text
+--cache-ram 0
+```
+
+Do not use `--no-mmap` as a default tuning flag.
 
 ### 1. Identify Backend
 
@@ -81,15 +103,17 @@ Start with conservative parameters, establish a baseline, then sweep one variabl
 | CPU threads | `-t` | `physical_cores / 2` | Sweep around physical core count |
 | Batch threads | `-tb` | same as `-t` | Check `--help`, not all builds have it |
 | GPU layers | `-ngl` | `total_layers * 0.5` | +4~+8 steps toward ceiling |
-| MoE CPU experts | `--n-cpu-moe` | `total_experts * 0.6` | Often bigger impact than ngl on decode |
+| MoE CPU experts | `--n-cpu-moe` | `0` if VRAM allows | CPU expert offload saves VRAM but often slows decode |
 | Context | `-c` | `4096` | Double each step until OOM |
 | KV cache type | `-ctk -ctv` | `q8_0/q8_0` if VRAM allows, else `q4_0/q4_0` | Avoid mixing types on CUDA |
 | Flash attention | `-fa` | check `--help` first | Syntax varies by build |
 | Prefill batch | `-b` | `2048` | Matters only for long prompts |
 | Micro batch | `-ub` | `512` | Typically `b / 4` |
 | Auto-fit | `-fit` | `off` for benchmarking | Can use `on` for casual daily use |
-| Memory map | `--mmap` | `on` by default | `--no-mmap` if model load fails |
+| Memory map | `--mmap` | `on` by default | Test `--no-mmap` only as an isolated diagnostic |
+| Prompt cache | `--cache-ram` | `0` for benchmarks | Avoid RAM pressure from default prompt cache |
 | Parallel slots | `-np` | `1` | Each slot eats proportional VRAM |
+| MTP/spec decode | `--spec-type` | off until baseline exists | See [docs/speculative-mtp.md](docs/speculative-mtp.md) |
 
 ---
 
@@ -135,9 +159,9 @@ Verify from the output:
    d. b sweep
 
 4. MoE route: docs/moe-tuning.md
-   a. --n-cpu-moe sweep (ngl=50%, ctx=4096)
-   b. ngl sweep (n_cpu_moe=best)
-   c. ctx sweep
+   a. try -ngl 99 and n_cpu_moe=0 if VRAM allows
+   b. if OOM, reduce ctx/KV or sweep n_cpu_moe
+   c. verify with llama-server at target ctx
    d. t, b sweep
 ```
 
@@ -259,7 +283,25 @@ Auto-fit mode. Off for reproducible benchmarking and manual tuning; can use on f
 
 ### `--mmap / --no-mmap`
 
-Memory-mapped model loading. Leave on by default. `--no-mmap` is a useful workaround when loading is slow, fails, or mmap behavior is suspicious on your platform.
+Memory-mapped model loading. Leave on by default.
+
+`--no-mmap` is not a speed tuning default. On Windows machines with 20GB-class
+GGUF files and 32GB RAM, it can create enough RAM pressure to make tests slow,
+unstable, or OOM-like. Use it only as an isolated diagnostic after a clean mmap
+baseline exists.
+
+### `--cache-ram`
+
+Prompt cache RAM limit. Newer `llama-server` builds may enable prompt cache by
+default, often with an 8192 MiB limit.
+
+For reproducible benchmarks, especially on 32GB RAM systems:
+
+```text
+--cache-ram 0
+```
+
+Without this, RAM pressure may be mistaken for a GPU tuning issue.
 
 ### `-b / --batch-size`
 
@@ -272,6 +314,12 @@ Micro-batch. Typically `b / 4`.
 ### `-np / --parallel`
 
 Concurrent request slots. Each slot adds proportional VRAM cost.
+
+### `--spec-type draft-mtp`
+
+Speculative/MTP decoding. This can greatly improve decode speed, but it does
+not improve prefill. Always measure short-prompt decode and long-prompt prefill
+separately. See [docs/speculative-mtp.md](docs/speculative-mtp.md).
 
 ---
 
@@ -288,7 +336,9 @@ Three checks:
    GPU0 KV buffer size = ...
 ```
 
-If GPU VRAM is not rising after model load, offload is not working. Try `-fit off --no-mmap`, then check `--verbose` log for `offloaded 0/N layers`.
+If GPU VRAM is not rising after model load, offload is not working. Try
+`-fit off`, then check `--verbose` log for `offloaded 0/N layers`. Use
+`--no-mmap` only as a separate diagnostic after a clean mmap baseline.
 
 Backend-specific verification: [docs/cuda.md](docs/cuda.md) | [docs/vulkan.md](docs/vulkan.md) | [docs/rocm.md](docs/rocm.md)
 
@@ -299,7 +349,7 @@ Backend-specific verification: [docs/cuda.md](docs/cuda.md) | [docs/vulkan.md](d
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | `--list-devices` empty | No GPU backend in binary | Get a build with your backend |
-| VRAM unchanged after load | 0 layers offloaded | Add `-fit off --no-mmap`, check verbose log |
+| VRAM unchanged after load | 0 layers offloaded | Add `-fit off`, check verbose log |
 | `-fa` parse error | Build syntax changed | Run `--help`, use exact flag shown |
 | .bat flashes and closes | Port in use | Kill all llama processes first |
 | .bat says `'ngl' is not recognized` | `^` has trailing space | Use single-line command |
@@ -333,6 +383,23 @@ When OOM, reduce in this order:
 
 ## Benchmark SOP
 
+### Server Benchmark First
+
+For target context size, prefer `llama-server` timing fields:
+
+```text
+prompt_per_second      = prefill
+predicted_per_second   = decode
+draft_n / accepted     = MTP/speculative acceptance
+```
+
+Minimum useful pair:
+
+```text
+short prompt + n_predict 128/256  -> decode
+4K prompt + n_predict 16          -> prefill
+```
+
 ### llama-bench Quick Start
 
 ```sh
@@ -347,6 +414,10 @@ llama-bench ... -p 2048 -n 256
 ```
 
 Output: `pp512` = prefill t/s, `tg128` = decode t/s.
+
+Do not treat `llama-bench` as proof that a target-context server
+configuration is fast or stable. Use it for quick scouting, then verify with
+`llama-server`.
 
 ### Sweep Strategy
 
@@ -388,6 +459,7 @@ Real-world tuning results for specific hardware/model combinations.
 
 | Hardware | Backend | Model | File |
 |----------|---------|-------|------|
+| RTX 2080 Ti 22GB | CUDA | Qwen3.6 35B A3B / 27B MTP | [examples/rtx2080ti-22g-qwen36-lessons.md](examples/rtx2080ti-22g-qwen36-lessons.md) |
 | RTX 5060 Ti 16GB | CUDA | Qwen3.6 27B Q4_K_M | [examples/rtx5060ti-qwen27b.md](examples/rtx5060ti-qwen27b.md) |
 | RTX 3060 12GB | CUDA | Qwen3.6 35B A3B Q4_K_M | [examples/rtx3060-qwen35b-moe.md](examples/rtx3060-qwen35b-moe.md) |
 | RX 6600 8GB | Vulkan | Qwen3.5 MoE | [examples/rx6600-vulkan-qwen35b-moe.md](examples/rx6600-vulkan-qwen35b-moe.md) |

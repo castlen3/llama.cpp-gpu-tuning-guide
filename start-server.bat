@@ -39,6 +39,8 @@ set MODEL=C:\path\to\model.gguf
 :: -b/-ub          Batch sizes (2048/512 is safe default)
 :: -t/-tb          CPU threads (start at physical_cores/2)
 :: -np 1           Parallel slots (1 for single-user)
+:: --cache-ram 0   Disable prompt cache for reproducible benchmarks
+:: --no-mmap       Do NOT add by default; test only as a diagnostic
 :: ============================================================
 
 "%LLAMA_DIR%\llama-server.exe" ^
@@ -52,6 +54,7 @@ set MODEL=C:\path\to\model.gguf
   -b 2048 ^
   -ub 512 ^
   -t 4 ^
+  --cache-ram 0 ^
   -np 1
 
 pause

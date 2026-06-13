@@ -114,7 +114,36 @@ This is especially important between benchmark runs — stale processes are invi
 
 ### mmap Issues on Windows
 
-If model load hangs or fails on Windows, try `--no-mmap` as a workaround.
+Leave mmap enabled by default.
+
+If model load hangs or fails on Windows, `--no-mmap` can be tested as an
+isolated workaround, but do not use it as a default tuning flag. On machines
+with 20GB-class GGUF files and 32GB RAM, `--no-mmap` can create enough RAM
+pressure to make tests slow, unstable, or OOM-like.
+
+For reproducible server benchmarks on RAM-limited systems, also disable prompt
+cache:
+
+```text
+--cache-ram 0
+```
+
+### Server vs Bench on CUDA
+
+Use `llama-bench` for quick scouting only. Final CUDA decisions must be verified
+with `llama-server` at the target context size and KV dtype.
+
+Record:
+
+```text
+prompt_per_second
+predicted_per_second
+VRAM used
+free system RAM
+```
+
+This avoids mistaking a short benchmark result for a stable 32K/64K server
+configuration.
 
 ## Common False Positives
 
